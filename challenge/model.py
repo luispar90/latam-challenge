@@ -1,11 +1,13 @@
 import pandas as pd
 import numpy as np
-import xgboost as xgb
 
 from typing import Tuple, Union, List
 from datetime import datetime
+from sklearn.linear_model import SGDClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.utils import shuffle
 from sklearn.metrics import confusion_matrix, classification_report
+from xgboost import XGBClassifier
 
 class DelayModel:
 
@@ -13,103 +15,7 @@ class DelayModel:
         self
     ):
         self._model = None # Model should be saved in this attribute.
-        self._top_10_features = [
-            "OPERA_Latin American Wings",
-            "MES_7",
-            "MES_10",
-            "OPERA_Grupo LATAM",
-            "MES_12",
-            "TIPOVUELO_I",
-            "MES_4",
-            "MES_11",
-            "OPERA_Sky Airline",
-            "OPERA_Copa Air"
-        ]
 
-    def preprocess(
-        self,
-        data: pd.DataFrame,
-        target_column: str = None
-    ) -> Union(Tuple[pd.DataFrame, pd.DataFrame], pd.DataFrame):
-        """
-        Prepare raw data for training or predict.
-
-        Args:
-            data (pd.DataFrame): raw data.
-            target_column (str, optional): if set, the target is returned.
-
-        Returns:
-            Tuple[pd.DataFrame, pd.DataFrame]: features and target.
-            or
-            pd.DataFrame: features.
-        """
-        data['period_day'] = data['Fecha-I'].apply(self.get_period_day)
-        data['high_season'] = data['Fecha-I'].apply(self.is_high_season)
-        data['min_diff'] = data.apply(self.get_min_diff, axis=1)
-        data['delay'] = np.where(data['min_diff'] > 15, 1, 0)
-
-        features = pd.concat([
-            pd.get_dummies(data['OPERA'], prefix='OPERA'),
-            pd.get_dummies(data['TIPOVUELO'], prefix='TIPOVUELO'),
-            pd.get_dummies(data['MES'], prefix='MES')
-        ], axis=1)
-
-        if target_column is not None:
-            target = data[target_column]
-            return features, target
-        else:
-            return features
-
-    def fit(
-        self,
-        features: pd.DataFrame,
-        target: pd.DataFrame
-    ) -> None:
-        """
-        Fit model with preprocessed data.
-
-        Args:
-            features (pd.DataFrame): preprocessed data.
-            target (pd.DataFrame): target.
-        """
-
-        # Split the data into training and validation sets.
-        x_train, x_test, y_train, y_test = train_test_split(
-            features, target, test_size=0.25, random_state=42
-        )
-
-        y_train.value_counts('%')*100
-        y_test.value_counts('%')*100
-
-        xgb_model = xgb.XGBClassifier(random_state=1, learning_rate=0.01)
-        xgb_model.fit(x_train, y_train)
-
-        xgboost_y_preds = xgb_model.predict(x_test)
-        xgboost_y_preds = [1 if y_pred > 0.5 else 0 for y_pred in xgboost_y_preds]
-
-        confusion_matrix(y_test, xgboost_y_preds)
-
-        
-
-    def predict(
-        self,
-        features: pd.DataFrame
-    ) -> List[int]:
-        """
-        Predict delays for new flights.
-
-        Args:
-            features (pd.DataFrame): preprocessed data.
-        
-        Returns:
-            (List[int]): predicted targets.
-        """
-        if self._model is not None:
-            predictions = self._model.predict(features)
-            return predictions
-        else:
-            raise ValueError("El modelo no ha sido entrenado. Utiliza el método fit para entrenarlo primero.")
-    
     def get_period_day(date):
         """
         Calculate the period of the day based on hour
@@ -215,5 +121,81 @@ class DelayModel:
                 rates[name] = 0
 
         return pd.DataFrame.from_dict(data = rates, orient = 'index', columns = ['Tasa (%)'])
-    
-    
+
+    def preprocess(
+        self,
+        data: pd.DataFrame,
+        target_column: str = None
+    ) -> Union(Tuple[pd.DataFrame, pd.DataFrame], pd.DataFrame):
+        """
+        Prepare raw data for training or predict.
+
+        Args:
+            data (pd.DataFrame): raw data.
+            target_column (str, optional): if set, the target is returned.
+
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame]: features and target.
+            or
+            pd.DataFrame: features.
+        """
+        data['period_day'] = data['Fecha-I'].apply(self.get_period_day)
+        data['high_season'] = data['Fecha-I'].apply(self.is_high_season)
+        data['min_diff'] = data.apply(self.get_min_diff, axis=1)
+        data['delay'] = np.where(data['min_diff'] > 15, 1, 0)
+
+        features = pd.concat([
+            pd.get_dummies(data['OPERA'], prefix='OPERA'),
+            pd.get_dummies(data['TIPOVUELO'], prefix='TIPOVUELO'),
+            pd.get_dummies(data['MES'], prefix='MES')
+        ], axis=1)
+
+        if target_column is not None:
+            target = data[target_column]
+            return features, target
+        else:
+            return features
+
+    def fit(
+        self,
+        features: pd.DataFrame,
+        target: pd.DataFrame
+    ) -> None:
+        """
+        Fit model with preprocessed data.
+
+        Args:
+            features (pd.DataFrame): preprocessed data.
+            target (pd.DataFrame): target.
+        """
+
+        # Split the data into training and validation sets.
+        x_train, x_test, y_train, y_test = train_test_split(features, target, test_size=0.33, random_state=42)
+
+        n_y0 = len(y_train[y_train == 0])
+        n_y1 = len(y_train[y_train == 1])
+        scale = n_y0 / n_y1
+
+        self._model = SGDClassifier(random_state=1, learning_rate=0.01, scale_pos_weight=scale)
+        self._model.fit(x_train, y_train)
+
+        
+
+    def predict(
+        self,
+        features: pd.DataFrame
+    ) -> List[int]:
+        """
+        Predict delays for new flights.
+
+        Args:
+            features (pd.DataFrame): preprocessed data.
+        
+        Returns:
+            (List[int]): predicted targets.
+        """
+        if self._model is not None:
+            predictions = self._model.predict(features)
+            return predictions
+        else:
+            raise ValueError("El modelo no ha sido entrenado. Utiliza el método fit para entrenarlo primero.")
